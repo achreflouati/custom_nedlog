@@ -368,6 +368,7 @@ function generate_analysis_html(analysis_data) {
                             <th>Stock Disponible</th>
                             <th>Manque</th>
                             <th>Fournisseur</th>
+                            <th>Order Number</th>
                             <th>Statut</th>
                         </tr>
                     </thead>
@@ -534,7 +535,7 @@ function generate_consolidated_items_rows(consolidated_items) {
 
 function generate_raw_materials_rows(raw_materials) {
     if (!raw_materials || raw_materials.length === 0) {
-        return '<tr><td colspan="7" class="text-center text-muted">Aucune matière première</td></tr>';
+        return '<tr><td colspan="8" class="text-center text-muted">Aucune matière première</td></tr>';
     }
     
     return raw_materials.map(material => {
@@ -552,7 +553,8 @@ function generate_raw_materials_rows(raw_materials) {
                 <td class="text-right ${has_shortage ? 'text-danger' : 'text-success'}">
                     <strong>${Math.max(0, shortage)}</strong>
                 </td>
-                <td>${material.default_supplier || 'Non défini'}</td>
+                <td>${material.supplier_name || material.default_supplier || 'Non défini'}</td>
+                <td>${material.customer_po_display || ''}</td>
                 <td>
                     <span class="badge ${has_shortage ? 'badge-danger' : 'badge-success'}">${status}</span>
                 </td>

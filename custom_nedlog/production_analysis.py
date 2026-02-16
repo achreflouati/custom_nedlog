@@ -23,7 +23,7 @@ def get_sales_orders_with_items(sales_order_names):
         sales_orders = frappe.get_all(
             'Sales Order',
             filters={'name': ['in', sales_order_names]},
-            fields=['name', 'customer', 'transaction_date', 'status', 'company', 'grand_total']
+            fields=['name', 'customer', 'transaction_date', 'status', 'company', 'grand_total', 'po_no']
         )
         
         # Récupérer les Sales Order Items avec leurs BOMs
@@ -112,6 +112,7 @@ def analyze_bom_requirements(sales_orders_data):
                 consolidated_items[item_key]['sales_orders'].append({
                     'sales_order': so_data['name'],
                     'customer': so_data.get('customer', ''),
+                    'customer_po_no': so_data.get('po_no', ''),
                     'qty': pending_qty
                 })
                 
@@ -135,7 +136,8 @@ def analyze_bom_requirements(sales_orders_data):
                         'finished_good': item['item_code'],
                         'bom_no': bom_no,
                         'qty_needed': material['required_qty'],
-                        'sales_order': so_data['name']
+                        'sales_order': so_data['name'],
+                        'customer_po_no': so_data.get('po_no', '')
                     })
         
         result = {
@@ -296,10 +298,6 @@ def calculate_stock_requirements(consolidated_data):
         
         # Récupérer les informations customer provided items
         try:
-            frappe.log_error(
-                title="DEBUG CLIENT - Customer Provided",
-                message=f"Nombre d'items: {len(item_codes)}\nItems: {item_codes}"
-            )
             client_data = frappe.get_all(
                 "Item",
                 filters={
@@ -309,12 +307,8 @@ def calculate_stock_requirements(consolidated_data):
                 },
                 fields=["name as item_code", "customer as client_code", "is_customer_provided_item"]
             )
-            frappe.log_error(
-                title="DEBUG CLIENT - Résultats",
-                message=f"Customer provided items trouvés: {len(client_data)}\nDétails: {client_data}"
-            )
         except Exception as e:
-            frappe.log_error(f"DEBUG CLIENT: Erreur lors de la récupération: {str(e)}")
+            frappe.log_error(f"Erreur lors de la récupération des customer provided items: {str(e)}")
             client_data = []
         
         supplier_by_item = {s['item_code']: s for s in supplier_data}
@@ -357,6 +351,13 @@ def calculate_stock_requirements(consolidated_data):
             display_supplier_name = client_info.get('client_name') if is_customer_provided else supplier_name
             display_supplier_code = client_info.get('client_code') if is_customer_provided else supplier_info.get('supplier')
             
+            # Récupérer les Customer PO Numbers uniques pour cet item
+            customer_po_numbers = list(set([
+                source.get('customer_po_no', '') 
+                for source in material.get('source_items', []) 
+                if source.get('customer_po_no', '')
+            ]))
+            
             raw_materials_requirements.append({
                 'item_code': item_code,
                 'item_name': material['item_name'],
@@ -372,6 +373,8 @@ def calculate_stock_requirements(consolidated_data):
                 'is_customer_provided_item': is_customer_provided,
                 'customer_provided_client': client_info.get('client_code'),
                 'customer_provided_client_name': client_info.get('client_name'),
+                'customer_po_numbers': customer_po_numbers,
+                'customer_po_display': ', '.join(customer_po_numbers) if customer_po_numbers else '',
                 'source_items': material.get('source_items', []),
                 'has_shortage': shortage_qty > 0
             })
