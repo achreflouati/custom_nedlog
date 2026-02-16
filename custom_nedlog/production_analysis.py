@@ -80,35 +80,18 @@ def analyze_bom_requirements(sales_orders_data):
         if isinstance(sales_orders_data, str):
             sales_orders_data = json.loads(sales_orders_data)
         
-        # DEBUG: Log des données reçues
-        debug_msg = f"analyze_bom_requirements - Données reçues: {len(sales_orders_data)} sales orders"
-        print(f"DEBUG 1: {debug_msg}")
-        
         consolidated_items = {}
         raw_materials_dict = {}
         
         for so_data in sales_orders_data:
-            so_msg = f"Traitement Sales Order: {so_data.get('name')}"
-            print(f"DEBUG 2: {so_msg}")
-            
             items = so_data.get('items', [])
-            items_msg = f"Items trouvés: {len(items)}"
-            print(f"DEBUG 3: {items_msg}")
             
             for item in items:
                 bom_no = item.get('bom_no')
                 pending_qty = flt(item.get('pending_qty', 0))
                 
-                item_msg = f"Item: {item.get('item_code')}, BOM: {bom_no}, Pending Qty: {pending_qty}"
-                print(f"DEBUG 4: {item_msg}")
-                
                 if not bom_no or pending_qty <= 0:
-                    ignore_msg = f"Item ignoré - BOM: {bool(bom_no)}, Qty valide: {pending_qty > 0}"
-                    print(f"DEBUG 5: {ignore_msg}")
                     continue
-                
-                process_msg = f"Item traité: {item.get('item_code')}"
-                print(f"DEBUG 6: {process_msg}")
                 
                 item_key = (item['item_code'], item.get('warehouse', ''))
                 
@@ -134,20 +117,8 @@ def analyze_bom_requirements(sales_orders_data):
                 
                 # Analyse des matières premières du BOM
                 bom_materials = get_bom_raw_materials(bom_no, pending_qty)
-                bom_msg = f"BOM {bom_no} - Matières trouvées: {len(bom_materials)}"
-                print(f"DEBUG 7: {bom_msg}")
                 
                 for material in bom_materials:
-                    material_key = material['item_code']
-                    
-                    if material_key not in raw_materials_dict:
-                        raw_materials_dict[material_key] = {
-                            'item_code': material['item_code'],
-                            'item_name': material['item_name'],
-                            'stock_uom': material['stock_uom'],
-                            'required_qty': 0,
-                            'source_items': []
-                        }
                     material_key = material['item_code']
                     
                     if material_key not in raw_materials_dict:
@@ -167,23 +138,15 @@ def analyze_bom_requirements(sales_orders_data):
                         'sales_order': so_data['name']
                     })
         
-        # DEBUG: Log final
-        final_msg = f"Résultats finaux - Items consolidés: {len(consolidated_items)}, Matières: {len(raw_materials_dict)}"
-        print(f"DEBUG 8: {final_msg}")
-        
         result = {
             'consolidated_items': list(consolidated_items.values()),
             'raw_materials': list(raw_materials_dict.values())
         }
         
-        return_msg = f"Retour des résultats: {len(result['consolidated_items'])} items, {len(result['raw_materials'])} matières"
-        print(f"DEBUG 9: {return_msg}")
-        
         return result
         
     except Exception as e:
         frappe.log_error(f"Erreur analyze_bom_requirements: {str(e)}")
-        print(f"ERREUR: {str(e)}")
         frappe.throw(_("Erreur lors de l'analyse des BOMs: {0}").format(str(e)))
 
 
@@ -193,18 +156,12 @@ def get_bom_raw_materials(bom_no, required_qty):
     """
     try:
         if not bom_no:
-            print(f"DEBUG BOM: Pas de BOM fourni")
             return []
-        
-        print(f"DEBUG BOM: Recherche BOM {bom_no}")
         
         # Récupérer le document BOM
         bom_doc = frappe.get_doc("BOM", bom_no)
         if not bom_doc:
-            print(f"DEBUG BOM: Document BOM {bom_no} introuvable")
             return []
-        
-        print(f"DEBUG BOM: Document trouvé, quantity={bom_doc.quantity}")
         
         # Récupérer les items du BOM
         bom_items = frappe.get_all(
@@ -218,35 +175,25 @@ def get_bom_raw_materials(bom_no, required_qty):
             ]
         )
         
-        print(f"DEBUG BOM: BOM Items trouvés: {len(bom_items)}")
-        
         if not bom_items:
-            print(f"DEBUG BOM: Aucun item trouvé pour BOM {bom_no}")
             return []
         
         materials = []
         bom_qty = flt(bom_doc.quantity) or 1
         
-        print(f"DEBUG BOM: Quantité BOM: {bom_qty}, Required qty: {required_qty}")
-        
-        for i, bom_item in enumerate(bom_items):
-            print(f"DEBUG BOM: Item {i+1}/{len(bom_items)}: {bom_item.item_code}, qty: {bom_item.qty}")
-            
+        for bom_item in bom_items:
             # Calculer les quantités
             qty_per_unit = flt(bom_item.qty) / bom_qty
             total_qty_needed = qty_per_unit * flt(required_qty)
             
-            print(f"DEBUG BOM: Calcul - qty_per_unit: {qty_per_unit}, total_needed: {total_qty_needed}")
-            
-            # Récupérer le fournisseur principal de l'item (première tentative sans is_default)
+            # Récupérer le fournisseur principal de l'item
             try:
                 default_supplier = frappe.db.get_value(
                     "Item Supplier",
                     {"parent": bom_item.item_code},
                     "supplier"
                 )
-            except Exception as supplier_error:
-                print(f"DEBUG BOM: Erreur récupération fournisseur: {supplier_error}")
+            except Exception:
                 default_supplier = None
             
             # Récupérer les infos de l'item
@@ -257,8 +204,7 @@ def get_bom_raw_materials(bom_no, required_qty):
                     ["stock_uom", "is_stock_item"], 
                     as_dict=True
                 ) or {}
-            except Exception as item_error:
-                print(f"DEBUG BOM: Erreur récupération item info: {item_error}")
+            except Exception:
                 item_info = {}
             
             material = {
@@ -273,13 +219,10 @@ def get_bom_raw_materials(bom_no, required_qty):
             }
             
             materials.append(material)
-            print(f"DEBUG BOM: Material ajouté: {bom_item.item_code}, qty: {total_qty_needed}")
         
-        print(f"DEBUG BOM: Total materials créés: {len(materials)}")
         return materials
         
     except Exception as e:
-        print(f"DEBUG BOM ERREUR: {str(e)}")
         frappe.log_error(f"Erreur BOM {bom_no}: {str(e)}")
         return []
 
@@ -344,28 +287,47 @@ def calculate_stock_requirements(consolidated_data):
             supplier_data = frappe.db.sql("""
                 SELECT 
                     parent as item_code,
-                    supplier,
-                    supplier_name
+                    supplier
                 FROM `tabItem Supplier`
                 WHERE parent IN %(item_codes)s
             """, {'item_codes': item_codes}, as_dict=True)
-        except Exception as supplier_error:
-            print(f"DEBUG: Erreur requête fournisseur: {supplier_error}")
-            # Fallback - essayer sans supplier_name
-            try:
-                supplier_data = frappe.db.sql("""
-                    SELECT 
-                        parent as item_code,
-                        supplier
-                    FROM `tabItem Supplier`
-                    WHERE parent IN %(item_codes)s
-                """, {'item_codes': item_codes}, as_dict=True)
-            except Exception as fallback_error:
-                print(f"DEBUG: Erreur fallback fournisseur: {fallback_error}")
-                supplier_data = []
+        except Exception:
+            supplier_data = []
+        
+        # Récupérer les informations customer provided items
+        try:
+            frappe.log_error(
+                title="DEBUG CLIENT - Customer Provided",
+                message=f"Nombre d'items: {len(item_codes)}\nItems: {item_codes}"
+            )
+            client_data = frappe.get_all(
+                "Item",
+                filters={
+                    "name": ["in", item_codes],
+                    "is_customer_provided_item": 1,
+                    "customer": ["is", "set"]
+                },
+                fields=["name as item_code", "customer as client_code", "is_customer_provided_item"]
+            )
+            frappe.log_error(
+                title="DEBUG CLIENT - Résultats",
+                message=f"Customer provided items trouvés: {len(client_data)}\nDétails: {client_data}"
+            )
+        except Exception as e:
+            frappe.log_error(f"DEBUG CLIENT: Erreur lors de la récupération: {str(e)}")
+            client_data = []
         
         supplier_by_item = {s['item_code']: s for s in supplier_data}
-        print(f"DEBUG: Fournisseurs trouvés: {len(supplier_data)}")
+        client_by_item = {c['item_code']: c for c in client_data}
+        
+        # Enrichir les données client avec les noms
+        for item_code, client_info in client_by_item.items():
+            if client_info.get('client_code'):
+                try:
+                    customer_name = frappe.db.get_value("Customer", client_info['client_code'], "customer_name")
+                    client_info['client_name'] = customer_name or client_info['client_code']
+                except Exception:
+                    client_info['client_name'] = client_info['client_code']
         
         # Calculer les besoins finaux
         raw_materials_requirements = []
@@ -378,6 +340,22 @@ def calculate_stock_requirements(consolidated_data):
             shortage_qty = max(0, required_qty - available_qty)
             
             supplier_info = supplier_by_item.get(item_code, {})
+            client_info = client_by_item.get(item_code, {})
+            
+            # Déterminer si c'est un customer provided item
+            is_customer_provided = client_info.get('is_customer_provided_item', False)
+            
+            # Récupérer le nom du fournisseur si disponible
+            supplier_name = None
+            if supplier_info.get('supplier'):
+                try:
+                    supplier_name = frappe.db.get_value("Supplier", supplier_info['supplier'], "supplier_name")
+                except Exception:
+                    supplier_name = supplier_info['supplier']
+            
+            # Pour l'affichage: si c'est un customer provided item, utiliser le client comme "fournisseur"
+            display_supplier_name = client_info.get('client_name') if is_customer_provided else supplier_name
+            display_supplier_code = client_info.get('client_code') if is_customer_provided else supplier_info.get('supplier')
             
             raw_materials_requirements.append({
                 'item_code': item_code,
@@ -389,8 +367,11 @@ def calculate_stock_requirements(consolidated_data):
                 'actual_qty': stock_info.get('actual_qty', 0),
                 'reserved_qty': stock_info.get('reserved_qty', 0),
                 'warehouses': stock_info.get('warehouses', []),
-                'default_supplier': supplier_info.get('supplier'),
-                'supplier_name': supplier_info.get('supplier_name'),
+                'default_supplier': display_supplier_code,
+                'supplier_name': display_supplier_name,
+                'is_customer_provided_item': is_customer_provided,
+                'customer_provided_client': client_info.get('client_code'),
+                'customer_provided_client_name': client_info.get('client_name'),
                 'source_items': material.get('source_items', []),
                 'has_shortage': shortage_qty > 0
             })
@@ -441,25 +422,47 @@ def create_grouped_material_requests(analysis_data):
         if not items_with_shortage:
             return []
         
-        # Grouper par fournisseur et type de demande
+        # Grouper par fournisseur/client et type de demande
         grouped_materials = defaultdict(list)
         
         for material in items_with_shortage:
-            # Déterminer le type de Material Request
-            supplier = material.get('default_supplier')
-            if supplier:
-                # Purchase Request pour items avec fournisseur
+            # Déterminer le type de Material Request selon la priorité
+            if material.get('is_customer_provided_item', False) and material.get('customer_provided_client'):
+                # PRIORITY 1: Customer Provided Items
+                client_code = material.get('customer_provided_client')
+                client_name = material.get('customer_provided_client_name', client_code)
+                key = f"CustomerProvided_{client_code}"
+                material_request_type = "Purchase"
+                provider_info = {
+                    'type': 'customer_provided',
+                    'code': client_code,
+                    'name': client_name
+                }
+            elif material.get('default_supplier'):
+                # PRIORITY 2: Supplier normal
+                supplier = material.get('default_supplier')
+                supplier_name = material.get('supplier_name') or supplier
                 key = f"Purchase_{supplier}"
                 material_request_type = "Purchase"
+                provider_info = {
+                    'type': 'supplier',
+                    'code': supplier,
+                    'name': supplier_name
+                }
             else:
-                # Material Request général pour items sans fournisseur
-                key = "Purchase_No_Supplier"
+                # PRIORITY 3: Aucun fournisseur défini
+                key = "Purchase_No_Provider"
                 material_request_type = "Purchase"
+                provider_info = {
+                    'type': 'no_provider',
+                    'code': None,
+                    'name': 'Pas de fournisseur défini'
+                }
             
             grouped_materials[key].append({
                 **material,
                 'material_request_type': material_request_type,
-                'supplier': supplier
+                'provider_info': provider_info
             })
         
         # Créer les Material Requests
@@ -469,10 +472,16 @@ def create_grouped_material_requests(analysis_data):
             try:
                 mr_doc = create_single_material_request(materials, group_key)
                 if mr_doc:
+                    provider_info = materials[0].get('provider_info', {})
+                    
                     created_mrs.append({
                         'name': mr_doc.name,
                         'material_request_type': mr_doc.material_request_type,
-                        'supplier': materials[0].get('supplier_name') or materials[0].get('supplier'),
+                        'provider_type': provider_info.get('type'),
+                        'provider_code': provider_info.get('code'),
+                        'provider_name': provider_info.get('name'),
+                        'supplier': provider_info.get('code') if provider_info.get('type') == 'supplier' else None,
+                        'customer_provided_client': provider_info.get('code') if provider_info.get('type') == 'customer_provided' else None,
                         'warehouse': get_default_warehouse(),
                         'items_count': len(materials),
                         'status': mr_doc.status
@@ -501,16 +510,39 @@ def create_single_material_request(materials, group_key):
         mr.company = frappe.defaults.get_defaults().get('company')
         mr.status = "Draft"
         
+        # Récupérer les informations du provider
+        provider_info = materials[0].get('provider_info', {})
+        provider_type = provider_info.get('type')
+        
+        # Définir les champs selon le type de provider
+        if provider_type == 'customer_provided':
+            # Pour les Customer Provided Items
+            mr.customer = provider_info.get('code')
+            mr.title = f"Material Request - Customer Provided: {provider_info.get('name')}"
+            remarks_prefix = f"CUSTOMER PROVIDED - Client: {provider_info.get('name')}"
+        elif provider_type == 'supplier':
+            # Pour les Suppliers normaux
+            if hasattr(mr, 'supplier'):  # Vérifier si le champ supplier existe
+                mr.supplier = provider_info.get('code')
+            mr.title = f"Material Request - Supplier: {provider_info.get('name')}"
+            remarks_prefix = f"SUPPLIER - Fournisseur: {provider_info.get('name')}"
+        else:
+            # Aucun provider défini
+            mr.title = f"Material Request - No Provider"
+            remarks_prefix = "NO PROVIDER - Pas de fournisseur défini"
+        
         # Ajouter une note explicative
         source_sales_orders = set()
         for material in materials:
             for source in material.get('source_items', []):
                 source_sales_orders.add(source.get('sales_order'))
         
-        mr.remarks = f"Material Request créée automatiquement pour Sales Orders: {', '.join(source_sales_orders)}"
+        mr.remarks = f"{remarks_prefix} | Sales Orders: {', '.join(source_sales_orders)} | Créé automatiquement"
         
         # Ajouter les items
         for material in materials:
+            item_remarks = f"Manque: {material['shortage_qty']} | Provider: {provider_info.get('name', 'N/A')}"
+            
             mr.append("items", {
                 "item_code": material['item_code'],
                 "item_name": material['item_name'],
@@ -518,7 +550,7 @@ def create_single_material_request(materials, group_key):
                 "uom": material['stock_uom'],
                 "warehouse": get_default_warehouse_for_item(material['item_code']),
                 "schedule_date": add_days(nowdate(), 7),
-                "description": f"Requis pour production - Manque: {material['shortage_qty']}"
+                "description": item_remarks
             })
         
         # Sauvegarder le document
@@ -582,7 +614,6 @@ def get_available_boms_for_item(item_code):
             "boms": boms
         }
         
-        frappe.log_error(f"Item {item_code}: {result['total_boms']} BOMs trouvés, {result['valid_boms']} valides")
         return result
         
     except Exception as e:
@@ -685,3 +716,32 @@ def get_item_stock_summary(item_code):
         FROM `tabBin`
         WHERE item_code = %(item_code)s
     """, {'item_code': item_code}, as_dict=True)[0]
+
+
+@frappe.whitelist()
+def check_available_fields():
+    """
+    Vérifie quels champs sont disponibles dans les tables Item et Item Supplier
+    """
+    try:
+        result = {}
+        
+        # Vérifier les colonnes de la table Item
+        item_columns = frappe.db.sql("SHOW COLUMNS FROM `tabItem`", as_dict=True)
+        result['item_columns'] = [col['Field'] for col in item_columns if 'customer' in col['Field'].lower() or 'provider' in col['Field'].lower()]
+        
+        # Vérifier les colonnes de la table Item Supplier
+        supplier_columns = frappe.db.sql("SHOW COLUMNS FROM `tabItem Supplier`", as_dict=True)
+        result['supplier_columns'] = [col['Field'] for col in supplier_columns]
+        
+        # Vérifier si la table Item Customer existe
+        try:
+            item_customer_exists = frappe.db.sql("SHOW TABLES LIKE 'tabItem Customer'")
+            result['item_customer_exists'] = bool(item_customer_exists)
+        except:
+            result['item_customer_exists'] = False
+            
+        return result
+        
+    except Exception as e:
+        return {'error': str(e)}
