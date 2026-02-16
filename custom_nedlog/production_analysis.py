@@ -256,7 +256,7 @@ def calculate_stock_requirements(consolidated_data):
                 planned_qty
             FROM `tabBin`
             WHERE item_code IN %(item_codes)s
-            AND actual_qty > 0
+            AND actual_qty != 0
         """, {'item_codes': item_codes}, as_dict=True)
         
         # Organiser les stocks par item
@@ -264,7 +264,9 @@ def calculate_stock_requirements(consolidated_data):
             'actual_qty': 0,
             'projected_qty': 0,
             'reserved_qty': 0,
-            'warehouses': []
+            'warehouses': [],
+            'warehouses_with_stock': [],
+            'total_warehouses': 0
         })
         
         for stock in stock_data:
@@ -272,11 +274,25 @@ def calculate_stock_requirements(consolidated_data):
             stock_by_item[item_code]['actual_qty'] += flt(stock['actual_qty'])
             stock_by_item[item_code]['projected_qty'] += flt(stock['projected_qty'])
             stock_by_item[item_code]['reserved_qty'] += flt(stock['reserved_qty'])
+            
+            # Toujours ajouter le warehouse pour avoir la liste complète
             stock_by_item[item_code]['warehouses'].append({
                 'warehouse': stock['warehouse'],
                 'actual_qty': stock['actual_qty'],
-                'projected_qty': stock['projected_qty']
+                'projected_qty': stock['projected_qty'],
+                'reserved_qty': stock['reserved_qty']
             })
+            
+            # Ajouter seulement les warehouses avec stock positif
+            if flt(stock['actual_qty']) > 0:
+                stock_by_item[item_code]['warehouses_with_stock'].append({
+                    'warehouse': stock['warehouse'],
+                    'actual_qty': stock['actual_qty'],
+                    'projected_qty': stock['projected_qty'],
+                    'reserved_qty': stock['reserved_qty']
+                })
+            
+            stock_by_item[item_code]['total_warehouses'] = len(stock_by_item[item_code]['warehouses'])
         
         # Récupérer les informations fournisseurs
         try:
@@ -289,6 +305,21 @@ def calculate_stock_requirements(consolidated_data):
             """, {'item_codes': item_codes}, as_dict=True)
         except Exception:
             supplier_data = []
+        
+        # Récupérer les informations supplémentaires des items
+        try:
+            item_extra_data = frappe.db.sql("""
+                SELECT 
+                    name as item_code,
+                    item_group,
+                    brand,
+                    weight_per_unit,
+                    weight_uom
+                FROM `tabItem`
+                WHERE name IN %(item_codes)s
+            """, {'item_codes': item_codes}, as_dict=True)
+        except Exception:
+            item_extra_data = []
         
         # Récupérer les informations customer provided items
         try:
@@ -306,6 +337,7 @@ def calculate_stock_requirements(consolidated_data):
             client_data = []
         
         supplier_by_item = {s['item_code']: s for s in supplier_data}
+        item_extra_by_item = {i['item_code']: i for i in item_extra_data}
         client_by_item = {c['item_code']: c for c in client_data}
         
         # Enrichir les données client avec les noms
@@ -338,6 +370,7 @@ def calculate_stock_requirements(consolidated_data):
             supplier_info = supplier_by_item.get(item_code, {})
             client_info = client_by_item.get(item_code, {})
             stock_info = stock_by_item.get(item_code, {})
+            item_extra_info = item_extra_by_item.get(item_code, {})
             
             # Déterminer si c'est un customer provided item
             is_customer_provided = client_info.get('is_customer_provided_item', False)
@@ -363,7 +396,16 @@ def calculate_stock_requirements(consolidated_data):
                 'customer_provided_client_name': client_info.get('client_name'),
                 'actual_qty': stock_info.get('actual_qty', 0),
                 'projected_qty': stock_info.get('projected_qty', 0),
-                'warehouses': stock_info.get('warehouses', [])
+                'warehouses': stock_info.get('warehouses', []),
+                # Informations supplémentaires des items
+                'item_group': item_extra_info.get('item_group', ''),
+                'brand': item_extra_info.get('brand', ''),
+                'weight_per_unit': item_extra_info.get('weight_per_unit', ''),
+                'weight_uom': item_extra_info.get('weight_uom', ''),
+                # Informations des warehouses pour les détails
+                'warehouses': [],  # Pas de warehouses pour les détails
+                'warehouses_with_stock': [],
+                'total_warehouses': 0
             }
             
             detailed_requirements.append(detail_row)
@@ -385,7 +427,14 @@ def calculate_stock_requirements(consolidated_data):
                     'customer_provided_client_name': client_info.get('client_name'),
                     'actual_qty': stock_info.get('actual_qty', 0),
                     'warehouses': stock_info.get('warehouses', []),
-                    'orders_count': 0
+                    'warehouses_with_stock': stock_info.get('warehouses_with_stock', []),
+                    'total_warehouses': stock_info.get('total_warehouses', 0),
+                    'orders_count': 0,
+                    # Informations supplémentaires des items
+                    'item_group': item_extra_info.get('item_group', ''),
+                    'brand': item_extra_info.get('brand', ''),
+                    'weight_per_unit': item_extra_info.get('weight_per_unit', ''),
+                    'weight_uom': item_extra_info.get('weight_uom', '')
                 }
             
             totals_by_item[item_code]['total_required_qty'] += required_qty
@@ -801,3 +850,257 @@ def check_available_fields():
         
     except Exception as e:
         return {'error': str(e)}
+
+
+# ================== FONCTIONS D'EXPORT ET EMAIL ==================
+
+@frappe.whitelist()
+def generate_material_requirements_pdf(table_data, visible_columns, meta_info):
+    """
+    Génère un PDF du rapport des besoins en matières premières
+    """
+    try:
+        if isinstance(table_data, str):
+            table_data = json.loads(table_data)
+        if isinstance(visible_columns, str):
+            visible_columns = json.loads(visible_columns)
+        if isinstance(meta_info, str):
+            meta_info = json.loads(meta_info)
+        
+        # Générer le HTML pour le PDF
+        html_content = generate_pdf_html_content(table_data, visible_columns, meta_info)
+        
+        # Créer le PDF en utilisant les fonctionnalités de Frappe
+        from frappe.utils.pdf import get_pdf
+        pdf_file = get_pdf(html_content)
+        
+        # Sauvegarder le fichier PDF
+        file_name = f"besoins_matieres_premieres_{frappe.utils.now_datetime().strftime('%Y%m%d_%H%M%S')}.pdf"
+        
+        # Créer le fichier avec le bon contenu
+        import base64
+        file_doc = frappe.get_doc({
+            "doctype": "File",
+            "file_name": file_name,
+            "content": base64.b64encode(pdf_file).decode(),
+            "decode": True,
+            "is_private": 0,
+            "folder": "Home"
+        })
+        file_doc.insert(ignore_permissions=True)
+        frappe.db.commit()
+        
+        return {
+            "success": True,
+            "file_url": file_doc.file_url,
+            "file_name": file_name
+        }
+        
+    except Exception as e:
+        frappe.log_error(f"Erreur génération PDF: {str(e)}")
+        return {"success": False, "error": str(e)}
+
+
+@frappe.whitelist()
+def send_material_requirements_email(recipients, subject, message, attach_pdf, table_data, visible_columns, meta_info):
+    """
+    Envoie le rapport par email
+    """
+    try:
+        if isinstance(table_data, str):
+            table_data = json.loads(table_data)
+        if isinstance(visible_columns, str):
+            visible_columns = json.loads(visible_columns)
+        if isinstance(meta_info, str):
+            meta_info = json.loads(meta_info)
+        
+        # Préparer la liste des destinataires
+        recipient_list = [email.strip() for email in recipients.split(',')]
+        
+        # Générer le contenu HTML pour l'email
+        html_content = generate_email_html_content(table_data, visible_columns, meta_info)
+        
+        attachments = []
+        
+        # Générer le PDF si demandé
+        if cint(attach_pdf):
+            pdf_result = generate_material_requirements_pdf(table_data, visible_columns, meta_info)
+            if pdf_result.get('success'):
+                # Lire le contenu du fichier PDF
+                file_path = frappe.get_site_path() + pdf_result.get('file_url')
+                with open(file_path, 'rb') as f:
+                    pdf_content = f.read()
+                
+                attachments.append({
+                    'fname': pdf_result.get('file_name'),
+                    'fcontent': pdf_content
+                })
+        
+        # Envoyer l'email
+        frappe.sendmail(
+            recipients=recipient_list,
+            subject=subject,
+            message=html_content,
+            attachments=attachments,
+            delayed=False
+        )
+        
+        return {
+            "success": True,
+            "message": f"Email envoyé à {len(recipient_list)} destinataire(s)"
+        }
+        
+    except Exception as e:
+        frappe.log_error(f"Erreur envoi email: {str(e)}")
+        return {"success": False, "error": str(e)}
+
+
+def generate_pdf_html_content(table_data, visible_columns, meta_info):
+    """
+    Génère le contenu HTML pour le PDF
+    """
+    # En-tête du tableau
+    headers_html = ""
+    for col_key in visible_columns:
+        if col_key in ['item-code', 'description', 'qty-required', 'stock-available', 'shortage', 'supplier', 'order-number', 'status']:
+            col_config = {
+                'item-code': 'Item Code',
+                'description': 'Description', 
+                'qty-required': 'Qty Requise',
+                'stock-available': 'Stock Disponible',
+                'shortage': 'Manque',
+                'supplier': 'Fournisseur',
+                'order-number': 'Order Number',
+                'status': 'Statut'
+            }
+            headers_html += f"<th>{col_config.get(col_key, col_key)}</th>"
+    
+    # Corps du tableau
+    rows_html = ""
+    for row_data in table_data:
+        row_type = row_data.get('_type', 'detail')
+        row_class = 'detail-row' if row_type == 'detail' else 'total-row'
+        
+        rows_html += f'<tr class="{row_class}">'
+        for col_key in visible_columns:
+            if col_key in ['item-code', 'description', 'qty-required', 'stock-available', 'shortage', 'supplier', 'order-number', 'status']:
+                col_config = {
+                    'item-code': 'Item Code',
+                    'description': 'Description',
+                    'qty-required': 'Qty Requise', 
+                    'stock-available': 'Stock Disponible',
+                    'shortage': 'Manque',
+                    'supplier': 'Fournisseur',
+                    'order-number': 'Order Number',
+                    'status': 'Statut'
+                }
+                cell_value = row_data.get(col_config.get(col_key, col_key), '')
+                rows_html += f"<td>{cell_value}</td>"
+        rows_html += '</tr>'
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Besoins en Matières Premières</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            h1 {{ color: #2c3e50; text-align: center; margin-bottom: 30px; }}
+            .meta-info {{ margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 11px; }}
+            th, td {{ border: 1px solid #ddd; padding: 6px; text-align: left; }}
+            th {{ background-color: #4a90e2; color: white; font-weight: bold; }}
+            .detail-row {{ background-color: #fff; }}
+            .total-row {{ background-color: #f0f0f0; font-weight: bold; }}
+        </style>
+    </head>
+    <body>
+        <h1>📋 Rapport des Besoins en Matières Premières</h1>
+        <div class="meta-info">
+            <strong>Date de génération:</strong> {meta_info.get('generated_date', '')}<br>
+            <strong>Heure:</strong> {meta_info.get('generated_time', '')}<br>
+            <strong>Généré par:</strong> {meta_info.get('generated_by', '')}
+        </div>
+        <table>
+            <thead>
+                <tr>{headers_html}</tr>
+            </thead>
+            <tbody>
+                {rows_html}
+            </tbody>
+        </table>
+    </body>
+    </html>
+    """
+    
+    return html_content
+
+
+def generate_email_html_content(table_data, visible_columns, meta_info):
+    """
+    Génère le contenu HTML pour l'email
+    """
+    # Utiliser la même logique que pour le PDF mais avec un style email-friendly
+    headers_html = ""
+    for col_key in visible_columns[:6]:  # Limiter les colonnes pour l'email
+        if col_key in ['item-code', 'description', 'qty-required', 'shortage', 'supplier', 'status']:
+            col_config = {
+                'item-code': 'Item Code',
+                'description': 'Description',
+                'qty-required': 'Qty Requise', 
+                'shortage': 'Manque',
+                'supplier': 'Fournisseur',
+                'status': 'Statut'
+            }
+            headers_html += f"<th style='background: #4a90e2; color: white; padding: 8px; border: 1px solid #ddd;'>{col_config.get(col_key, col_key)}</th>"
+    
+    # Limiter à 20 premières lignes pour l'email
+    limited_data = table_data[:20] if len(table_data) > 20 else table_data
+    
+    rows_html = ""
+    for row_data in limited_data:
+        rows_html += '<tr>'
+        for col_key in visible_columns[:6]:
+            if col_key in ['item-code', 'description', 'qty-required', 'shortage', 'supplier', 'status']:
+                col_config = {
+                    'item-code': 'Item Code',
+                    'description': 'Description',
+                    'qty-required': 'Qty Requise',
+                    'shortage': 'Manque', 
+                    'supplier': 'Fournisseur',
+                    'status': 'Statut'
+                }
+                cell_value = row_data.get(col_config.get(col_key, col_key), '')
+                rows_html += f"<td style='padding: 8px; border: 1px solid #ddd;'>{cell_value}</td>"
+        rows_html += '</tr>'
+    
+    if len(table_data) > 20:
+        rows_html += f"<tr><td colspan='6' style='text-align: center; padding: 10px; font-style: italic;'>... et {len(table_data) - 20} lignes supplémentaires (voir PDF joint)</td></tr>"
+    
+    html_content = f"""
+    <div style="font-family: Arial, sans-serif;">
+        <h2 style="color: #2c3e50;">📋 Rapport des Besoins en Matières Premières</h2>
+        
+        <div style="background: #f8f9fa; padding: 15px; margin-bottom: 20px; border-radius: 5px;">
+            <strong>Date de génération:</strong> {meta_info.get('generated_date', '')}<br>
+            <strong>Heure:</strong> {meta_info.get('generated_time', '')}<br>
+            <strong>Généré par:</strong> {meta_info.get('generated_by', '')}
+        </div>
+        
+        <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+            <thead>
+                <tr>{headers_html}</tr>
+            </thead>
+            <tbody>
+                {rows_html}
+            </tbody>
+        </table>
+        
+        <p style="margin-top: 20px; color: #666; font-size: 12px;">
+            Ce rapport a été généré automatiquement par le système ERP.
+        </p>
+    </div>
+    """
+    
+    return html_content
