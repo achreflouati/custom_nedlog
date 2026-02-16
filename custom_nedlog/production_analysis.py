@@ -74,14 +74,14 @@ def get_sales_orders_with_items(sales_order_names):
 @frappe.whitelist()
 def analyze_bom_requirements(sales_orders_data):
     """
-    Analyse les BOMs et consolide les items
+    Analyse les BOMs et maintient les détails par Sales Order (pas de consolidation)
     """
     try:
         if isinstance(sales_orders_data, str):
             sales_orders_data = json.loads(sales_orders_data)
         
         consolidated_items = {}
-        raw_materials_dict = {}
+        raw_materials_by_order = []  # Liste des matières premières par order
         
         for so_data in sales_orders_data:
             items = so_data.get('items', [])
@@ -95,7 +95,7 @@ def analyze_bom_requirements(sales_orders_data):
                 
                 item_key = (item['item_code'], item.get('warehouse', ''))
                 
-                # Consolidation des items finis
+                # Consolidation des items finis (garde cette logique)
                 if item_key not in consolidated_items:
                     consolidated_items[item_key] = {
                         'item_code': item['item_code'],
@@ -116,33 +116,27 @@ def analyze_bom_requirements(sales_orders_data):
                     'qty': pending_qty
                 })
                 
-                # Analyse des matières premières du BOM
+                # Analyse des matières premières du BOM - GARDER PAR ORDER
                 bom_materials = get_bom_raw_materials(bom_no, pending_qty)
                 
                 for material in bom_materials:
-                    material_key = material['item_code']
-                    
-                    if material_key not in raw_materials_dict:
-                        raw_materials_dict[material_key] = {
-                            'item_code': material['item_code'],
-                            'item_name': material['item_name'],
-                            'stock_uom': material['stock_uom'],
-                            'required_qty': 0,
-                            'source_items': []
-                        }
-                    
-                    raw_materials_dict[material_key]['required_qty'] += material['required_qty']
-                    raw_materials_dict[material_key]['source_items'].append({
+                    # Ajouter chaque matière première avec ses détails de commande
+                    raw_materials_by_order.append({
+                        'item_code': material['item_code'],
+                        'item_name': material['item_name'],
+                        'stock_uom': material['stock_uom'],
+                        'required_qty': material['required_qty'],
+                        'sales_order': so_data['name'],
+                        'customer': so_data.get('customer', ''),
+                        'customer_po_no': so_data.get('po_no', ''),
                         'finished_good': item['item_code'],
                         'bom_no': bom_no,
-                        'qty_needed': material['required_qty'],
-                        'sales_order': so_data['name'],
-                        'customer_po_no': so_data.get('po_no', '')
+                        'default_supplier': material.get('default_supplier')
                     })
         
         result = {
             'consolidated_items': list(consolidated_items.values()),
-            'raw_materials': list(raw_materials_dict.values())
+            'raw_materials_by_order': raw_materials_by_order
         }
         
         return result
@@ -232,23 +226,23 @@ def get_bom_raw_materials(bom_no, required_qty):
 @frappe.whitelist()
 def calculate_stock_requirements(consolidated_data):
     """
-    Calcule les besoins en stock et les disponibilités
+    Calcule les besoins en stock par order et ajoute les totaux
     """
     try:
         if isinstance(consolidated_data, str):
             consolidated_data = json.loads(consolidated_data)
         
-        raw_materials = consolidated_data.get('raw_materials', [])
+        raw_materials_by_order = consolidated_data.get('raw_materials_by_order', [])
         
-        # Récupérer les informations de stock pour tous les items
-        item_codes = [rm['item_code'] for rm in raw_materials]
-        
-        if not item_codes:
+        if not raw_materials_by_order:
             return {
                 'consolidated_items': consolidated_data.get('consolidated_items', []),
                 'raw_materials_requirements': [],
                 'stats': get_analysis_stats(consolidated_data, [])
             }
+        
+        # Récupérer tous les item codes uniques
+        item_codes = list(set([rm['item_code'] for rm in raw_materials_by_order]))
         
         # Récupérer les stocks disponibles
         stock_data = frappe.db.sql("""
@@ -323,66 +317,93 @@ def calculate_stock_requirements(consolidated_data):
                 except Exception:
                     client_info['client_name'] = client_info['client_code']
         
-        # Calculer les besoins finaux
-        raw_materials_requirements = []
+        # Enrichir les données fournisseur avec les noms
+        for item_code, supplier_info in supplier_by_item.items():
+            if supplier_info.get('supplier'):
+                try:
+                    supplier_name = frappe.db.get_value("Supplier", supplier_info['supplier'], "supplier_name")
+                    supplier_info['supplier_name'] = supplier_name or supplier_info['supplier']
+                except Exception:
+                    supplier_info['supplier_name'] = supplier_info['supplier']
         
-        for material in raw_materials:
+        # Préparer les résultats détaillés par order + totaux
+        detailed_requirements = []
+        totals_by_item = {}
+        
+        # Traiter chaque ligne de matière première
+        for material in raw_materials_by_order:
             item_code = material['item_code']
             required_qty = flt(material['required_qty'])
-            stock_info = stock_by_item.get(item_code, {})
-            available_qty = flt(stock_info.get('projected_qty', 0))
-            shortage_qty = max(0, required_qty - available_qty)
             
             supplier_info = supplier_by_item.get(item_code, {})
             client_info = client_by_item.get(item_code, {})
+            stock_info = stock_by_item.get(item_code, {})
             
             # Déterminer si c'est un customer provided item
             is_customer_provided = client_info.get('is_customer_provided_item', False)
             
-            # Récupérer le nom du fournisseur si disponible
-            supplier_name = None
-            if supplier_info.get('supplier'):
-                try:
-                    supplier_name = frappe.db.get_value("Supplier", supplier_info['supplier'], "supplier_name")
-                except Exception:
-                    supplier_name = supplier_info['supplier']
-            
             # Pour l'affichage: si c'est un customer provided item, utiliser le client comme "fournisseur"
-            display_supplier_name = client_info.get('client_name') if is_customer_provided else supplier_name
+            display_supplier_name = client_info.get('client_name') if is_customer_provided else supplier_info.get('supplier_name')
             display_supplier_code = client_info.get('client_code') if is_customer_provided else supplier_info.get('supplier')
             
-            # Récupérer les Customer PO Numbers uniques pour cet item
-            customer_po_numbers = list(set([
-                source.get('customer_po_no', '') 
-                for source in material.get('source_items', []) 
-                if source.get('customer_po_no', '')
-            ]))
-            
-            raw_materials_requirements.append({
+            # Ajouter la ligne détaillée
+            detail_row = {
+                'type': 'detail',  # Identifier comme ligne de détail
                 'item_code': item_code,
                 'item_name': material['item_name'],
                 'stock_uom': material['stock_uom'],
                 'required_qty': required_qty,
-                'available_qty': available_qty,
-                'shortage_qty': shortage_qty,
-                'actual_qty': stock_info.get('actual_qty', 0),
-                'reserved_qty': stock_info.get('reserved_qty', 0),
-                'warehouses': stock_info.get('warehouses', []),
+                'sales_order': material['sales_order'],
+                'customer_po_no': material['customer_po_no'],
+                'customer': material['customer'],
                 'default_supplier': display_supplier_code,
                 'supplier_name': display_supplier_name,
                 'is_customer_provided_item': is_customer_provided,
                 'customer_provided_client': client_info.get('client_code'),
                 'customer_provided_client_name': client_info.get('client_name'),
-                'customer_po_numbers': customer_po_numbers,
-                'customer_po_display': ', '.join(customer_po_numbers) if customer_po_numbers else '',
-                'source_items': material.get('source_items', []),
-                'has_shortage': shortage_qty > 0
-            })
+                'actual_qty': stock_info.get('actual_qty', 0),
+                'projected_qty': stock_info.get('projected_qty', 0),
+                'warehouses': stock_info.get('warehouses', [])
+            }
+            
+            detailed_requirements.append(detail_row)
+            
+            # Accumuler pour les totaux
+            if item_code not in totals_by_item:
+                totals_by_item[item_code] = {
+                    'type': 'total',  # Identifier comme ligne de total
+                    'item_code': item_code,
+                    'item_name': material['item_name'],
+                    'stock_uom': material['stock_uom'],
+                    'total_required_qty': 0,
+                    'available_qty': stock_info.get('projected_qty', 0),
+                    'shortage_qty': 0,
+                    'default_supplier': display_supplier_code,
+                    'supplier_name': display_supplier_name,
+                    'is_customer_provided_item': is_customer_provided,
+                    'customer_provided_client': client_info.get('client_code'),
+                    'customer_provided_client_name': client_info.get('client_name'),
+                    'actual_qty': stock_info.get('actual_qty', 0),
+                    'warehouses': stock_info.get('warehouses', []),
+                    'orders_count': 0
+                }
+            
+            totals_by_item[item_code]['total_required_qty'] += required_qty
+            totals_by_item[item_code]['orders_count'] += 1
+        
+        # Calculer les shortages pour les totaux
+        for item_code, total_data in totals_by_item.items():
+            shortage = max(0, total_data['total_required_qty'] - total_data['available_qty'])
+            total_data['shortage_qty'] = shortage
+            total_data['has_shortage'] = shortage > 0
+        
+        # Combiner détails et totaux
+        final_requirements = detailed_requirements + list(totals_by_item.values())
         
         return {
             'consolidated_items': consolidated_data.get('consolidated_items', []),
-            'raw_materials_requirements': raw_materials_requirements,
-            'stats': get_analysis_stats(consolidated_data, raw_materials_requirements)
+            'raw_materials_requirements': final_requirements,
+            'stats': get_analysis_stats_detailed(consolidated_data, final_requirements)
         }
         
     except Exception as e:
@@ -390,9 +411,32 @@ def calculate_stock_requirements(consolidated_data):
         frappe.throw(_("Erreur lors du calcul des stocks: {0}").format(str(e)))
 
 
+def get_analysis_stats_detailed(consolidated_data, raw_materials_requirements):
+    """
+    Calcule les statistiques pour l'affichage avec la nouvelle structure détaillée
+    """
+    consolidated_items = consolidated_data.get('consolidated_items', [])
+    
+    # Séparer les détails des totaux
+    details = [rm for rm in raw_materials_requirements if rm.get('type') == 'detail']
+    totals = [rm for rm in raw_materials_requirements if rm.get('type') == 'total']
+    
+    return {
+        'total_sales_orders': len(set([
+            so['sales_order'] 
+            for item in consolidated_items 
+            for so in item.get('sales_orders', [])
+        ])),
+        'total_finished_goods': len(consolidated_items),
+        'total_raw_materials_unique': len(totals),
+        'total_raw_materials_lines': len(details),
+        'items_with_shortage': len([rm for rm in totals if rm.get('has_shortage', False)])
+    }
+
+
 def get_analysis_stats(consolidated_data, raw_materials_requirements):
     """
-    Calcule les statistiques pour l'affichage
+    Calcule les statistiques pour l'affichage (version compatible)
     """
     consolidated_items = consolidated_data.get('consolidated_items', [])
     
@@ -411,7 +455,7 @@ def get_analysis_stats(consolidated_data, raw_materials_requirements):
 @frappe.whitelist()
 def create_grouped_material_requests(analysis_data):
     """
-    Crée les Material Requests groupées par fournisseur et type
+    Crée les Material Requests groupées par fournisseur et type (version adaptée aux détails)
     """
     try:
         if isinstance(analysis_data, str):
@@ -419,16 +463,19 @@ def create_grouped_material_requests(analysis_data):
         
         raw_materials = analysis_data.get('raw_materials_requirements', [])
         
-        # Filtrer uniquement les items avec shortage
-        items_with_shortage = [rm for rm in raw_materials if rm.get('has_shortage', False) and rm.get('shortage_qty', 0) > 0]
+        # Filtrer uniquement les totaux avec shortage
+        totals_with_shortage = [
+            rm for rm in raw_materials 
+            if rm.get('type') == 'total' and rm.get('has_shortage', False) and rm.get('shortage_qty', 0) > 0
+        ]
         
-        if not items_with_shortage:
+        if not totals_with_shortage:
             return []
         
         # Grouper par fournisseur/client et type de demande
         grouped_materials = defaultdict(list)
         
-        for material in items_with_shortage:
+        for material in totals_with_shortage:
             # Déterminer le type de Material Request selon la priorité
             if material.get('is_customer_provided_item', False) and material.get('customer_provided_client'):
                 # PRIORITY 1: Customer Provided Items
@@ -462,11 +509,17 @@ def create_grouped_material_requests(analysis_data):
                     'name': 'Pas de fournisseur défini'
                 }
             
-            grouped_materials[key].append({
-                **material,
+            # Adapter la structure pour la création de MR
+            mr_material = {
+                'item_code': material['item_code'],
+                'item_name': material['item_name'],
+                'stock_uom': material['stock_uom'],
+                'shortage_qty': material['shortage_qty'],
                 'material_request_type': material_request_type,
                 'provider_info': provider_info
-            })
+            }
+            
+            grouped_materials[key].append(mr_material)
         
         # Créer les Material Requests
         created_mrs = []

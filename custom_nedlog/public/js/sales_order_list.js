@@ -538,27 +538,69 @@ function generate_raw_materials_rows(raw_materials) {
         return '<tr><td colspan="8" class="text-center text-muted">Aucune matière première</td></tr>';
     }
     
-    return raw_materials.map(material => {
-        const shortage = (material.required_qty || 0) - (material.available_qty || 0);
-        const has_shortage = shortage > 0;
-        const row_class = has_shortage ? 'shortage-row' : 'available-row';
-        const status = has_shortage ? 'MANQUE' : 'DISPONIBLE';
+    // Séparer les détails des totaux
+    const details = raw_materials.filter(m => m.type === 'detail');
+    const totals = raw_materials.filter(m => m.type === 'total');
+    
+    let html = '';
+    
+    // Grouper les détails par item_code
+    const groupedDetails = {};
+    details.forEach(material => {
+        if (!groupedDetails[material.item_code]) {
+            groupedDetails[material.item_code] = [];
+        }
+        groupedDetails[material.item_code].push(material);
+    });
+    
+    // Afficher chaque groupe (item + ses orders + total)
+    Object.keys(groupedDetails).forEach(item_code => {
+        const itemDetails = groupedDetails[item_code];
+        const itemTotal = totals.find(t => t.item_code === item_code);
         
-        return `
-            <tr class="${row_class}">
-                <td><a href="/app/item/${material.item_code}" target="_blank">${material.item_code}</a></td>
-                <td>${material.item_name || ''}</td>
-                <td class="text-right">${material.required_qty || 0}</td>
-                <td class="text-right">${material.available_qty || 0}</td>
-                <td class="text-right ${has_shortage ? 'text-danger' : 'text-success'}">
-                    <strong>${Math.max(0, shortage)}</strong>
-                </td>
-                <td>${material.supplier_name || material.default_supplier || 'Non défini'}</td>
-                <td>${material.customer_po_display || ''}</td>
-                <td>
-                    <span class="badge ${has_shortage ? 'badge-danger' : 'badge-success'}">${status}</span>
-                </td>
-            </tr>
-        `;
-    }).join('');
+        // Afficher les lignes de détail
+        itemDetails.forEach((material, index) => {
+            html += `
+                <tr class="detail-row">
+                    <td><a href="/app/item/${material.item_code}" target="_blank">${material.item_code}</a></td>
+                    <td>${material.item_name || ''}</td>
+                    <td class="text-right">${material.required_qty || 0}</td>
+                    <td class="text-right">-</td>
+                    <td class="text-right">-</td>
+                    <td>${material.supplier_name || material.default_supplier || 'Non défini'}</td>
+                    <td><strong>${material.customer_po_no || ''}</strong></td>
+                    <td><span class="badge badge-info">DÉTAIL</span></td>
+                </tr>
+            `;
+        });
+        
+        // Afficher la ligne de total pour cet item
+        if (itemTotal) {
+            const shortage = Math.max(0, (itemTotal.total_required_qty || 0) - (itemTotal.available_qty || 0));
+            const has_shortage = shortage > 0;
+            const status = has_shortage ? 'MANQUE' : 'DISPONIBLE';
+            
+            html += `
+                <tr class="total-row" style="background-color: #f8f9fa; font-weight: bold; border-top: 2px solid #007bff;">
+                    <td><a href="/app/item/${itemTotal.item_code}" target="_blank">${itemTotal.item_code}</a></td>
+                    <td>${itemTotal.item_name || ''}</td>
+                    <td class="text-right"><strong>${itemTotal.total_required_qty || 0}</strong></td>
+                    <td class="text-right"><strong>${itemTotal.available_qty || 0}</strong></td>
+                    <td class="text-right ${has_shortage ? 'text-danger' : 'text-success'}">
+                        <strong>${shortage}</strong>
+                    </td>
+                    <td>${itemTotal.supplier_name || itemTotal.default_supplier || 'Non défini'}</td>
+                    <td><em>TOTAL (${itemTotal.orders_count || 0} orders)</em></td>
+                    <td>
+                        <span class="badge ${has_shortage ? 'badge-danger' : 'badge-success'}">${status}</span>
+                    </td>
+                </tr>
+            `;
+            
+            // Ajouter une ligne de séparation
+            html += '<tr class="separator-row"><td colspan="8" style="height: 10px; border: none;"></td></tr>';
+        }
+    });
+    
+    return html;
 }
