@@ -39,7 +39,7 @@ function analyze_production_requirements(sales_order_names) {
     console.log('Starting production analysis for:', sales_order_names);
     
     let analysis_dialog = new frappe.ui.Dialog({
-        title: `🔍 Analyse des Besoins de Production - ${sales_order_names.length} commande(s)`,
+        title: ` Analyse des Besoins de Production - ${sales_order_names.length} commande(s)`,
         fields: [
             {
                 fieldtype: 'HTML',
@@ -92,7 +92,7 @@ function create_material_requests_from_sales_orders(sales_order_names) {
     console.log('Creating Material Requests for:', sales_order_names);
     
     let mr_dialog = new frappe.ui.Dialog({
-        title: `📋 Création Material Requests - ${sales_order_names.length} commande(s)`,
+        title: ` Création Material Requests - ${sales_order_names.length} commande(s)`,
         fields: [
             {
                 fieldtype: 'HTML',
@@ -194,6 +194,21 @@ function calculate_stock_requirements(consolidated_data) {
             },
             callback: function(response) {
                 if (response.message) {
+                    // Debug: afficher les données reçues
+                    console.log('📊 Données de stock reçues:', response.message);
+                    
+                    // Debug: vérifier les données des entrepôts
+                    if (response.message.raw_materials_requirements) {
+                        const materialsWithWarehouses = response.message.raw_materials_requirements.filter(
+                            m => m.warehouses && m.warehouses.length > 0
+                        );
+                        console.log(`🏭 ${materialsWithWarehouses.length} matières avec données d'entrepôts`);
+                        
+                        materialsWithWarehouses.slice(0, 3).forEach(material => {
+                            console.log(`   📦 ${material.item_code}: ${material.warehouses.length} entrepôts`, material.warehouses);
+                        });
+                    }
+                    
                     resolve(response.message);
                 } else {
                     reject(new Error('Erreur lors du calcul des besoins en stock'));
@@ -238,6 +253,9 @@ function create_grouped_material_requests(analysis_data) {
  * Affiche les résultats de l'analyse de production
  */
 function display_production_analysis_results(dialog, analysis_data) {
+    // Debug automatique des données d'emplacements
+    debug_warehouses_data(analysis_data);
+    
     const html_content = generate_analysis_html(analysis_data);
     dialog.fields_dict.analysis_content.$wrapper.html(html_content);
     
@@ -383,7 +401,7 @@ function generate_analysis_html(analysis_data) {
             </div>
             
             <!-- Items Finis Consolidés -->
-            <h3 class="section-title">📦 Items Finis Consolidés</h3>
+            <h3 class="section-title"> Items Finis Consolidés</h3>
             <div class="analysis-section">
                 <table class="data-table">
                     <thead>
@@ -401,7 +419,7 @@ function generate_analysis_html(analysis_data) {
                 </table>
             </div>
             
-            <h3 class="section-title">🔧 Besoins en Matières Premières</h3>
+            <h3 class="section-title"> Besoins en Matières Premières</h3>
             
             <!-- Actions Toolbar -->
             <div style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center;">
@@ -443,11 +461,11 @@ function generate_analysis_html(analysis_data) {
                         <label for="col-shortage">Manque</label>
                     </div>
                     <div class="preference-item">
-                        <input type="checkbox" id="col-warehouses-list">
+                        <input type="checkbox" id="col-warehouses-list" checked>
                         <label for="col-warehouses-list">Emplacements</label>
                     </div>
                     <div class="preference-item">
-                        <input type="checkbox" id="col-warehouses-qty">
+                        <input type="checkbox" id="col-warehouses-qty" checked>
                         <label for="col-warehouses-qty">Qtés par Emplacement</label>
                     </div>
                     <div class="preference-item">
@@ -538,6 +556,56 @@ function generate_material_request_html(created_mrs) {
 }
 
 // ================== FONCTIONS DE DEBUG ==================
+
+/**
+ * Debug: Vérifier les données d'emplacements
+ */
+function debug_warehouses_data(analysis_data) {
+    console.log('🔍 DEBUG EMPLACEMENTS - Analyse des données reçues');
+    
+    if (!analysis_data || !analysis_data.raw_materials_requirements) {
+        console.log('❌ Aucune données de matières premières trouvées');
+        return;
+    }
+    
+    const materials = analysis_data.raw_materials_requirements;
+    console.log(`📋 Total matières: ${materials.length}`);
+    
+    // Compter les types
+    const detailRows = materials.filter(m => m.type === 'detail');
+    const totalRows = materials.filter(m => m.type === 'total');
+    
+    console.log(`   📄 Détails: ${detailRows.length}`);
+    console.log(`   📊 Totaux: ${totalRows.length}`);
+    
+    // Vérifier les warehouses dans les totaux
+    const totalRowsWithWarehouses = totalRows.filter(m => m.warehouses && m.warehouses.length > 0);
+    console.log(`   🏭 Totaux avec entrepôts: ${totalRowsWithWarehouses.length}`);
+    
+    if (totalRowsWithWarehouses.length > 0) {
+        console.log('🏭 Exemples d\'entrepôts:');
+        totalRowsWithWarehouses.slice(0, 5).forEach((material, index) => {
+            console.log(`   ${index + 1}. ${material.item_code}:`);
+            material.warehouses.forEach(w => {
+                console.log(`      📦 ${w.warehouse}: ${w.actual_qty} (disponible)`);
+            });
+        });
+    } else {
+        console.log('⚠️ Aucun total avec données d\'entrepôts trouvé');
+        
+        // Debug plus poussé
+        if (totalRows.length > 0) {
+            console.log('🔍 Structure du premier total:', totalRows[0]);
+        }
+    }
+    
+    return {
+        total_materials: materials.length,
+        detail_rows: detailRows.length,
+        total_rows: totalRows.length,
+        totals_with_warehouses: totalRowsWithWarehouses.length
+    };
+}
 
 /**
  * Vérifie les BOMs disponibles pour un item
@@ -796,15 +864,19 @@ function generate_material_row(material, rowType) {
             case 'warehouses-list':
                 if (rowType === 'total' && material.warehouses && material.warehouses.length > 0) {
                     const warehouseNames = material.warehouses.map(w => w.warehouse).join(', ');
-                    cellContent = `<small>${warehouseNames}</small>`;
+                    cellContent = `<div style="font-size: 11px;">${warehouseNames}</div>`;
                 } else {
                     cellContent = '<span class="text-center">-</span>';
                 }
                 break;
             case 'warehouses-qty':
                 if (rowType === 'total' && material.warehouses && material.warehouses.length > 0) {
-                    const warehouseDetails = material.warehouses.map(w => `${w.warehouse}: ${w.actual_qty || 0}`).join('<br>');
-                    cellContent = `<small>${warehouseDetails}</small>`;
+                    const warehouseDetails = material.warehouses.map(w => 
+                        `<div style="margin: 2px 0; padding: 2px 5px; background: #f8f9fa; border-radius: 3px;">
+                            <strong>${w.warehouse}:</strong> <span style="color: ${w.actual_qty > 0 ? '#28a745' : '#dc3545'};">${w.actual_qty || 0}</span>
+                        </div>`
+                    ).join('');
+                    cellContent = `<div style="font-size: 11px;">${warehouseDetails}</div>`;
                 } else {
                     cellContent = '<span class="text-center">-</span>';
                 }
@@ -855,12 +927,16 @@ function generate_material_row(material, rowType) {
  * Extraire le contenu visible du tableau pour l'impression
  */
 function extractVisibleTableContent(tableElement) {
+    if (!tableElement) {
+        return '<p>Aucun tableau trouvé</p>';
+    }
+    
     const visibleColumns = [];
     const headers = tableElement.querySelectorAll('thead th');
     
     // Déterminer quelles colonnes sont visibles
     headers.forEach((header, index) => {
-        if (!header.classList.contains('column-hidden')) {
+        if (!header.classList.contains('column-hidden') && !header.style.display === 'none') {
             visibleColumns.push(index);
         }
     });
@@ -871,30 +947,52 @@ function extractVisibleTableContent(tableElement) {
     tableHtml += '<thead><tr>';
     headers.forEach((header, index) => {
         if (visibleColumns.includes(index)) {
-            tableHtml += `<th>${header.textContent}</th>`;
+            tableHtml += `<th>${header.textContent.trim()}</th>`;
         }
     });
     tableHtml += '</tr></thead>';
     
-    // Corps du tableau
+    // Corps du tableau - inclure TOUTES les lignes visibles
     tableHtml += '<tbody>';
     const rows = tableElement.querySelectorAll('tbody tr');
-    rows.forEach(row => {
-        if (!row.classList.contains('separator-row')) {
+    
+    let visibleRowCount = 0;
+    rows.forEach((row, rowIndex) => {
+        // Vérifier si la ligne est visible (pas cachée par CSS ou style)
+        const isVisible = !row.classList.contains('separator-row') && 
+                         !row.classList.contains('hidden') && 
+                         row.style.display !== 'none' &&
+                         !row.hidden;
+        
+        if (isVisible) {
+            visibleRowCount++;
             const rowClass = row.className || '';
             tableHtml += `<tr class="${rowClass}">`;
             
             const cells = row.querySelectorAll('td');
-            cells.forEach((cell, index) => {
-                if (visibleColumns.includes(index)) {
-                    tableHtml += `<td>${cell.textContent}</td>`;
+            cells.forEach((cell, cellIndex) => {
+                if (visibleColumns.includes(cellIndex)) {
+                    // Préserver le contenu exact de la cellule
+                    let cellContent = cell.textContent.trim();
+                    if (!cellContent || cellContent === '') {
+                        cellContent = '-';
+                    }
+                    tableHtml += `<td>${cellContent}</td>`;
                 }
             });
             
             tableHtml += '</tr>';
         }
     });
+    
     tableHtml += '</tbody></table>';
+    
+    // Ajouter un résumé en bas si plusieurs commandes
+    if (visibleRowCount > 1) {
+        tableHtml += `<div class="print-summary" style="margin-top: 20px; font-style: italic; color: #666;">
+            Total: ${visibleRowCount} lignes extraites du tableau d'analyse
+        </div>`;
+    }
     
     return tableHtml;
 }
@@ -905,15 +1003,18 @@ function extractVisibleTableContent(tableElement) {
 function printMaterialRequirementsReport() {
     const tableElement = document.getElementById('raw-materials-table');
     if (!tableElement) {
-        frappe.msgprint('Aucune donnée à imprimer');
+        frappe.msgprint('Aucune donnée à imprimer - tableau non trouvé');
+        return;
+    }
+    
+    const totalRows = tableElement.querySelectorAll('tbody tr').length;
+    if (totalRows === 0) {
+        frappe.msgprint('Le tableau ne contient aucune donnée');
         return;
     }
     
     // Créer une fenêtre d'impression avec le contenu du tableau
     const printWindow = window.open('', '_blank', 'width=800,height=600');
-    
-    // Extraire seulement le contenu visible du tableau
-    const visibleTableContent = extractVisibleTableContent(tableElement);
     
     const printContent = `
         <!DOCTYPE html>
@@ -970,8 +1071,7 @@ function printMaterialRequirementsReport() {
                     print-color-adjust: exact;
                 }
                 .separator-row { 
-                    border: none !important; 
-                    height: 10px; 
+                    display: none !important; 
                 }
                 .column-hidden { 
                     display: none !important; 
@@ -985,16 +1085,18 @@ function printMaterialRequirementsReport() {
             </style>
         </head>
         <body>
-            <h1>📋 Rapport des Besoins en Matières Premières</h1>
+            <h1> Rapport des Besoins en Matières Premières</h1>
             <div class="meta-info">
                 <strong>Date de génération:</strong> ${new Date().toLocaleDateString('fr-FR')}<br>
                 <strong>Heure:</strong> ${new Date().toLocaleTimeString('fr-FR')}<br>
                 <strong>Généré par:</strong> ${frappe.session.user}
             </div>
-            ${visibleTableContent}
+            ${tableElement.outerHTML}
         </body>
         </html>
     `;
+    
+    console.log(' IMPRESSION - Contenu HTML final:', printContent.substring(0, 800) + '...');
     
     printWindow.document.write(printContent);
     printWindow.document.close();

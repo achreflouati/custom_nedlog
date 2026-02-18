@@ -504,7 +504,7 @@ def get_analysis_stats(consolidated_data, raw_materials_requirements):
 @frappe.whitelist()
 def create_grouped_material_requests(analysis_data):
     """
-    Crée les Material Requests groupées par fournisseur et type (version adaptée aux détails)
+    Crée les Material Requests intelligentes groupées par fournisseur, client et type
     """
     try:
         if isinstance(analysis_data, str):
@@ -519,87 +519,270 @@ def create_grouped_material_requests(analysis_data):
         ]
         
         if not totals_with_shortage:
-            return []
+            return {"success": True, "message": "Aucun besoin en matières premières détecté", "created_mrs": []}
         
-        # Grouper par fournisseur/client et type de demande
-        grouped_materials = defaultdict(list)
+        # Intelligence: Analyser et classer les matériaux selon leur nature et fournisseur
+        grouped_requests = analyze_and_group_materials_intelligently(totals_with_shortage)
         
-        for material in totals_with_shortage:
-            # Déterminer le type de Material Request selon la priorité
-            if material.get('is_customer_provided_item', False) and material.get('customer_provided_client'):
-                # PRIORITY 1: Customer Provided Items
-                client_code = material.get('customer_provided_client')
-                client_name = material.get('customer_provided_client_name', client_code)
-                key = f"CustomerProvided_{client_code}"
-                material_request_type = "Purchase"
-                provider_info = {
-                    'type': 'customer_provided',
-                    'code': client_code,
-                    'name': client_name
-                }
-            elif material.get('default_supplier'):
-                # PRIORITY 2: Supplier normal
-                supplier = material.get('default_supplier')
-                supplier_name = material.get('supplier_name') or supplier
-                key = f"Purchase_{supplier}"
-                material_request_type = "Purchase"
-                provider_info = {
-                    'type': 'supplier',
-                    'code': supplier,
-                    'name': supplier_name
-                }
-            else:
-                # PRIORITY 3: Aucun fournisseur défini
-                key = "Purchase_No_Provider"
-                material_request_type = "Purchase"
-                provider_info = {
-                    'type': 'no_provider',
-                    'code': None,
-                    'name': 'Pas de fournisseur défini'
-                }
-            
-            # Adapter la structure pour la création de MR
-            mr_material = {
-                'item_code': material['item_code'],
-                'item_name': material['item_name'],
-                'stock_uom': material['stock_uom'],
-                'shortage_qty': material['shortage_qty'],
-                'material_request_type': material_request_type,
-                'provider_info': provider_info
-            }
-            
-            grouped_materials[key].append(mr_material)
-        
-        # Créer les Material Requests
+        # Créer les Material Requests selon la classification intelligente
         created_mrs = []
         
-        for group_key, materials in grouped_materials.items():
+        for group_info in grouped_requests:
             try:
-                mr_doc = create_single_material_request(materials, group_key)
+                mr_doc = create_intelligent_material_request(group_info)
                 if mr_doc:
-                    provider_info = materials[0].get('provider_info', {})
-                    
                     created_mrs.append({
                         'name': mr_doc.name,
+                        'title': mr_doc.title,
                         'material_request_type': mr_doc.material_request_type,
-                        'provider_type': provider_info.get('type'),
-                        'provider_code': provider_info.get('code'),
-                        'provider_name': provider_info.get('name'),
-                        'supplier': provider_info.get('code') if provider_info.get('type') == 'supplier' else None,
-                        'customer_provided_client': provider_info.get('code') if provider_info.get('type') == 'customer_provided' else None,
-                        'warehouse': get_default_warehouse(),
-                        'items_count': len(materials),
-                        'status': mr_doc.status
+                        'provider_name': group_info['provider_name'],
+                        'provider_type': group_info['provider_type'],
+                        'total_items': len(group_info['items']),
+                        'total_amount': sum([item['shortage_qty'] for item in group_info['items']])
                     })
+                    
             except Exception as e:
-                frappe.log_error(f"Erreur création MR pour {group_key}: {str(e)}")
+                frappe.log_error(f"Erreur création MR pour {group_info['provider_name']}: {str(e)}")
                 continue
         
-        return created_mrs
+        return {
+            "success": True, 
+            "message": f"Material Requests créés avec succès: {len(created_mrs)} demandes",
+            "created_mrs": created_mrs
+        }
         
     except Exception as e:
-        frappe.log_error(f"Erreur create_grouped_material_requests: {str(e)}")
-        frappe.throw(_("Erreur lors de la création des Material Requests: {0}").format(str(e)))
+        frappe.log_error(f"Erreur dans create_grouped_material_requests: {str(e)}")
+        return {"success": False, "error": str(e)}
+
+
+def analyze_and_group_materials_intelligently(materials):
+    """
+    Analyse intelligente des matériaux pour déterminer le meilleur groupement
+    """
+    grouped_requests = {}
+    
+    for material in materials:
+        # Intelligence Level 1: Déterminer le type de demande et le fournisseur
+        provider_info = determine_intelligent_provider(material)
+        
+        # Intelligence Level 2: Déterminer le type de Material Request optimal
+        mr_type = determine_intelligent_mr_type(material, provider_info)
+        
+        # Intelligence Level 3: Définir la clé de groupement
+        group_key = f"{provider_info['type']}_{provider_info['code']}_{mr_type}"
+        
+        if group_key not in grouped_requests:
+            grouped_requests[group_key] = {
+                'provider_type': provider_info['type'],
+                'provider_code': provider_info['code'],
+                'provider_name': provider_info['name'],
+                'material_request_type': mr_type,
+                'schedule_date': frappe.utils.add_days(frappe.utils.nowdate(), 7),  # 1 semaine par défaut
+                'company': frappe.defaults.get_user_default("Company"),
+                'items': []
+            }
+        
+        # Ajouter l'item au groupe
+        grouped_requests[group_key]['items'].append({
+            'item_code': material['item_code'],
+            'item_name': material['item_name'], 
+            'qty': material['shortage_qty'],
+            'stock_uom': material['stock_uom'],
+            'warehouse': determine_optimal_warehouse(material, mr_type)
+        })
+    
+    return list(grouped_requests.values())
+
+
+def determine_intelligent_provider(material):
+    """
+    Détermine intelligemment le fournisseur/client selon les priorités métier
+    """
+    # PRIORITÉ 1: Customer Provided Items
+    if material.get('is_customer_provided_item') and material.get('customer_provided_client'):
+        return {
+            'type': 'customer_provided',
+            'code': material['customer_provided_client'],
+            'name': f"Client: {material.get('customer_provided_client_name', material['customer_provided_client'])}"
+        }
+    
+    # PRIORITÉ 2: Fournisseur par défaut de l'item
+    if material.get('default_supplier'):
+        supplier_name = material.get('supplier_name') or material['default_supplier']
+        return {
+            'type': 'supplier',
+            'code': material['default_supplier'],
+            'name': f"Fournisseur: {supplier_name}"
+        }
+    
+    # PRIORITÉ 3: Recherche dynamique du meilleur fournisseur
+    best_supplier = find_best_supplier_for_item(material['item_code'])
+    if best_supplier:
+        return {
+            'type': 'supplier',
+            'code': best_supplier['supplier'],
+            'name': f"Fournisseur: {best_supplier['supplier_name']}"
+        }
+    
+    # PRIORITÉ 4: Production interne si c'est un item manufacturé
+    if is_manufactured_item(material['item_code']):
+        return {
+            'type': 'manufacture',
+            'code': 'internal_production',
+            'name': 'Production Interne'
+        }
+    
+    # PRIORITÉ 5: Aucun fournisseur - création manuelle nécessaire
+    return {
+        'type': 'manual',
+        'code': 'no_provider',
+        'name': 'Aucun fournisseur défini'
+    }
+
+
+def determine_intelligent_mr_type(material, provider_info):
+    """
+    Détermine intelligemment le type de Material Request optimal
+    """
+    # Customer Provided → toujours Purchase (chez le client)
+    if provider_info['type'] == 'customer_provided':
+        return 'Purchase'
+    
+    # Production interne → Material Transfer vers production
+    if provider_info['type'] == 'manufacture':
+        return 'Material Transfer'
+    
+    # Fournisseur standard → Purchase
+    if provider_info['type'] == 'supplier':
+        return 'Purchase'
+    
+    # Par défaut → Purchase
+    return 'Purchase'
+
+
+def find_best_supplier_for_item(item_code):
+    """
+    Trouve le meilleur fournisseur pour un item selon l'historique et les prix
+    """
+    try:
+        # Chercher dans Item Supplier avec le meilleur prix
+        suppliers = frappe.db.sql("""
+            SELECT 
+                supplier,
+                supplier_name,
+                AVG(price) as avg_price,
+                COUNT(*) as usage_count
+            FROM `tabItem Price` ip
+            JOIN `tabSupplier` s ON ip.price_list = s.name
+            WHERE ip.item_code = %s
+                AND ip.buying = 1
+                AND s.disabled = 0
+            GROUP BY supplier
+            ORDER BY usage_count DESC, avg_price ASC
+            LIMIT 1
+        """, item_code, as_dict=True)
+        
+        if suppliers:
+            return suppliers[0]
+            
+        # Fallback: chercher le premier fournisseur actif
+        fallback = frappe.db.sql("""
+            SELECT supplier, supplier_name
+            FROM `tabItem Supplier`
+            WHERE parent = %s
+            ORDER BY idx ASC
+            LIMIT 1
+        """, item_code, as_dict=True)
+        
+        return fallback[0] if fallback else None
+        
+    except Exception:
+        return None
+
+
+def is_manufactured_item(item_code):
+    """
+    Vérifie si l'item est manufacturé (a un BOM actif)
+    """
+    try:
+        bom_count = frappe.db.count('BOM', {
+            'item': item_code,
+            'is_active': 1,
+            'is_default': 1
+        })
+        return bom_count > 0
+    except Exception:
+        return False
+
+
+def determine_optimal_warehouse(material, mr_type):
+    """
+    Détermine le warehouse optimal selon le type de MR
+    """
+    try:
+        company = frappe.defaults.get_user_default("Company")
+        
+        if mr_type == 'Purchase':
+            # Pour les achats → Stock warehouse principal
+            main_warehouse = frappe.db.get_value('Company', company, 'default_inventory_account')
+            return main_warehouse or 'Stock - CN'  # Fallback
+            
+        elif mr_type == 'Material Transfer':
+            # Pour les transferts → Manufacturing warehouse
+            return 'Manufacturing - CN'  # Peut être configuré
+            
+        else:
+            # Par défaut → Stock principal
+            return 'Stock - CN'
+            
+    except Exception:
+        return 'Stock - CN'  # Fallback par sécurité
+
+
+def create_intelligent_material_request(group_info):
+    """
+    Crée une Material Request intelligente avec toutes les optimisations
+    """
+    try:
+        # Générer un titre intelligent
+        provider_name = group_info['provider_name']
+        mr_type = group_info['material_request_type']
+        items_count = len(group_info['items'])
+        
+        title = f"{mr_type} - {provider_name} ({items_count} items)"
+        
+        # Créer le document MR
+        mr_doc = frappe.get_doc({
+            'doctype': 'Material Request',
+            'title': title,
+            'material_request_type': mr_type,
+            'schedule_date': group_info['schedule_date'],
+            'company': group_info['company'],
+            'items': []
+        })
+        
+        # Ajouter les items avec optimisation
+        for item in group_info['items']:
+            mr_doc.append('items', {
+                'item_code': item['item_code'],
+                'item_name': item['item_name'],
+                'qty': item['qty'],
+                'stock_uom': item['stock_uom'],
+                'warehouse': item['warehouse'],
+                'schedule_date': group_info['schedule_date']
+            })
+        
+        # Sauvegarder et valider automatiquement
+        mr_doc.insert(ignore_permissions=True)
+        mr_doc.submit()
+        
+        frappe.db.commit()
+        return mr_doc
+        
+    except Exception as e:
+        frappe.log_error(f"Erreur création MR intelligente: {str(e)}")
+        return None
 
 
 def create_single_material_request(materials, group_key):
