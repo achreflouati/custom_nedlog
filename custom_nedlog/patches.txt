@@ -4,3 +4,5 @@
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
+# Add warehouse control fields
+custom_nedlog.patches.add_warehouse_control_fields

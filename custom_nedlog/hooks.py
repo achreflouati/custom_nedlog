@@ -64,6 +64,24 @@ doctype_list_js = {"Sales Order" : "public/js/sales_order_list.js"}
 # 	"Role": "home_page"
 # }
 
+doc_events = {
+	"Purchase Receipt": {
+		"on_submit": "custom_nedlog.warehouse_control.validation.handle_incoming_transaction"
+	},
+	"Stock Entry": {
+		"on_submit": "custom_nedlog.warehouse_control.validation.handle_incoming_transaction",
+		"on_update_after_submit": "custom_nedlog.warehouse_control.validation.handle_outgoing_transaction"
+	},
+	"Material Request": {
+		"on_submit": "custom_nedlog.warehouse_control.validation.handle_incoming_transaction"
+	},
+	"Delivery Note": {
+		"on_submit": "custom_nedlog.warehouse_control.validation.handle_outgoing_transaction"
+	},
+	"Work Order": {
+		"on_submit": "custom_nedlog.warehouse_control.validation.handle_outgoing_transaction"
+	}
+}
 # Generators
 # ----------
 

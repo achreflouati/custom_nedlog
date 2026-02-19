@@ -1,0 +1,68 @@
+{
+	"name": "Warehouse Customer Status",
+	"report_name": "Warehouse Customer Status",
+	"report_type": "Script Report",
+	"is_standard": "Yes",
+	"module": "custom proc",
+	"doctype": "Report",
+	"columns": [
+		{
+			"label": "Warehouse",
+			"fieldname": "warehouse",
+			"fieldtype": "Link",
+			"options": "Warehouse",
+			"width": 200
+		},
+		{
+			"label": "Assigned Customer",
+			"fieldname": "assigned_customer",
+			"fieldtype": "Link",
+			"options": "Customer",
+			"width": 200
+		},
+		{
+			"label": "Status",
+			"fieldname": "warehouse_status",
+			"fieldtype": "Data",
+			"width": 100
+		},
+		{
+			"label": "Total Quantity",
+			"fieldname": "total_quantity",
+			"fieldtype": "Float",
+			"width": 120
+		},
+		{
+			"label": "Last Assignment",
+			"fieldname": "last_assignment_date",
+			"fieldtype": "Datetime",
+			"width": 140
+		},
+		{
+			"label": "Last Movement",
+			"fieldname": "last_movement_date",
+			"fieldtype": "Date",
+			"width": 120
+		}
+	],
+	"filters": [
+		{
+			"label": "Warehouse",
+			"fieldname": "warehouse",
+			"fieldtype": "Link",
+			"options": "Warehouse"
+		},
+		{
+			"label": "Assigned Customer",
+			"fieldname": "assigned_customer",
+			"fieldtype": "Link",
+			"options": "Customer"
+		},
+		{
+			"label": "Warehouse Status",
+			"fieldname": "warehouse_status",
+			"fieldtype": "Select",
+			"options": "\nAvailable\nReserved"
+		}
+	]
+}
